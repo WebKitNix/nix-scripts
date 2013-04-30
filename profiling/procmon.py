@@ -5,7 +5,6 @@ import os
 import sys
 import glib
 import time
-import commands
 import subprocess
 from datetime import datetime
 
@@ -106,7 +105,8 @@ def pidOfChildWebProcess(parentPid):
                 if line.startswith('PPid'):
                     return int(line.split('\t')[-1].strip())
 
-    pidofOutput = commands.getoutput('pidof WebProcess')
+    pidof = subprocess.Popen(['pidof', 'WebProcess'], stdout=subprocess.PIPE)
+    pidofOutput, _ = pidof.communicate()
     for pid in [int(pid) for pid in pidofOutput.split(' ') if pid]:
         if getParentPid(pid) == parentPid:
             return pid

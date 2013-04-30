@@ -4,8 +4,9 @@
 import os
 import sys
 import glib
+import time
 import shutil
-import commands
+import subprocess
 from datetime import datetime
 import calendar
 
@@ -30,17 +31,20 @@ class WebKitMonitor(object):
     def __init__(self, uipid, wppid):
         self.uipid = uipid
         self.wppid = wppid
-        os.mkdir('ui-%d' % uipid)
-        os.mkdir('wp-%d' % wppid)
+        self.uidir = 'ui-%d' % uipid
+        self.wpdir = 'wp-%d' % wppid
+        os.mkdir(self.uidir)
+        os.mkdir(self.wpdir)
 
     def update(self):
         timestamp = calendar.timegm(datetime.now().utctimetuple())
-        src = '/proc/%d/smaps' % self.uipid
-        dst = 'ui-%d/smaps-%d' % (self.uipid, timestamp)
-        shutil.copy(src, dst)
-        src = '/proc/%d/smaps' % self.wppid
-        dst = 'wp-%d/smaps-%d' % (self.wppid, timestamp)
-        shutil.copy(src, dst)
+        uiSrc = '/proc/%d/smaps' % self.uipid
+        wpSrc = '/proc/%d/smaps' % self.wppid
+        if not os.path.exists(uiSrc) or not os.path.exists(wpSrc):
+            self.loop.quit()
+            return
+        shutil.copy(uiSrc, 'ui-%d/smaps-%d' % (self.uipid, timestamp))
+        shutil.copy(wpSrc, 'wp-%d/smaps-%d' % (self.wppid, timestamp))
         glib.timeout_add_seconds(2, self.update)
 
     def run(self):
@@ -49,45 +53,53 @@ class WebKitMonitor(object):
         self.loop.run()
 
 
-def pidof(process):
-    pid = commands.getoutput('pidof WebProcess')
-    return int(pid) if pid else 0
+def pidOfChildWebProcess(parentPid):
 
-def parentpid(child):
-    with open('/proc/%d/status' % child, 'r') as f:
-        for line in f:
-            if line.startswith('PPid'):
-                return int(line.split('\t')[-1].strip())
+    def getParentPid(childPid):
+        with open('/proc/%d/status' % childPid, 'r') as procStatus:
+            for line in procStatus:
+                if line.startswith('PPid'):
+                    return int(line.split('\t')[-1].strip())
+
+    pidof = subprocess.Popen(['pidof', 'WebProcess'], stdout=subprocess.PIPE)
+    pidofOutput, _ = pidof.communicate()
+    for pid in [int(pid) for pid in pidofOutput.split(' ') if pid]:
+        if getParentPid(pid) == parentPid:
+            return pid
+
+    return None
+
 
 def main():
-    ui = None
-    wp = None
-    seconds = 1
     if len(sys.argv) == 1:
-        wp = pidof('WebProcess')
-        if not wp:
-            print 'There is no WebProcess running.'
-            sys.exit(1)
-    elif len(sys.argv) == 2:
-        wp = int(sys.argv[2])
-
-    if len(sys.argv) < 3:
-        ui = parentpid(wp)
-        if not ui:
-            print 'There is no UIProcess running.'
-            sys.exit(1)
-    elif len(sys.argv) == 3:
-        ui = int(sys.argv[1])
-    else:
-        print 'Usage: %s [WebProcessPID [UIProcessPID]]' % sys.argv[0]
+        print 'Usage: %s <webkit2-application> [application-arguments]' % sys.argv[0]
         sys.exit(1)
 
-    print 'Monitoring memory for UIProcess %d and WebProcess %d' % (ui, wp)
-    mon = WebKitMonitor(ui, wp)
+    try:
+        uiproc = subprocess.Popen(sys.argv[1:])
+    except OSError:
+        print 'ERROR: could not locate application.'
+        sys.exit(1)
+
+    wppid = None
+
+    for i in range(10):
+        wppid = pidOfChildWebProcess(uiproc.pid)
+        if wppid:
+            break
+        print 'WebProcess not found. Trying again.'
+        time.sleep(1)
+
+    if not wppid:
+        print 'Could not find WebProcess. Aborting.'
+        sys.exit(1)
+
+    print 'Monitoring memory for UIProcess %d (%s) and WebProcess %d' % (uiproc.pid, sys.argv[1], wppid)
+    mon = WebKitMonitor(uiproc.pid, wppid)
     mon.run()
     print 'Monitoring has ended.'
+    print 'Check the directories: "%s" and "%s"' % (mon.uidir, mon.wpdir)
 
 
 if __name__ == '__main__':
     main()
-
